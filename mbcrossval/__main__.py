@@ -11,64 +11,43 @@ from mbcrossval import mbcfg
 
 
 def main():
+    # define paths since call from terminal is not yet supported
+    storage = './data/xval'
+    webroot = './data/xval/http/'
+    workdir = './working_directories/xval'
+    
+    # get paths from environment variables (for run on cluster)
+    # storage = os.environ["STORAGE"]
+    # webroot = os.environ["WEBROOT"]
+    # workdir = os.environ["WORKDIR"]
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--storage',
-                        type=str,
-                        help='Path to storage directory')
-    parser.add_argument('--webroot',
-                        type=str,
-                        help='Path to website directory')
-    parser.add_argument('--workdir',
-                        type=str,
-                        help='Path to working directory')
-
+    # define other parameters since call from terminal is not yet supported
     defaultcfg = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                               'defaultconfig.cfg')
+    config = defaultcfg
 
-    parser.add_argument('--config',
-                        type=str,
-                        default=defaultcfg,
-                        help='Optional path to configuration file. ' +
-                        'Uses defaultconfig.cfg as default.')
-
-    parser.add_argument('--histalp',
-                        dest='histalp',
-                        action='store_true',
-                        help='Optional. Used without argument, will make a ' +
-                             'HISTALP crossvalidation run.')
-    parser.set_defaults(histalp=False)
-
-    parser.add_argument('--extended',
-                        dest='extended',
-                        action='store_true',
-                        help='Optional. Used without argument, a more time ' +
-                             'consuming crossvalidation run will be made.')
-    parser.set_defaults(extended=False)
-
-    args = parser.parse_args()
+    histalp = True
+    extended = True
 
     # run configuration file
-    mbcfg.initialize(args.config)
+    mbcfg.initialize(config)
 
     # HISTALP
-    mbcfg.PARAMS['histalp'] = args.histalp
-    if mbcfg.PARAMS['histalp']:
-        mbcfg.PARAMS['oggmversion'] = mbcfg.PARAMS['oggmversion'] + '-histalp'
+    mbcfg.PARAMS['oggmversion'] = mbcfg.PARAMS['oggmversion'] + '-histalp'
 
     # Major crossvalidation
-    mbcfg.PARAMS['run_major_crossval'] = args.extended
+    mbcfg.PARAMS['run_major_crossval'] = extended
 
     # Working directory
-    mbcfg.PATHS['working_dir'] = os.path.abspath(args.workdir)
+    mbcfg.PATHS['working_dir'] = os.path.abspath(workdir)
     utils.mkdir(mbcfg.PATHS['working_dir'])
 
     # Storage directory
-    mbcfg.PATHS['storage_dir'] = os.path.abspath(args.storage)
+    mbcfg.PATHS['storage_dir'] = os.path.abspath(storage)
     utils.mkdir(mbcfg.PATHS['storage_dir'])
 
     # Website root directory
-    mbcfg.PATHS['webroot'] = os.path.abspath(args.webroot)
+    mbcfg.PATHS['webroot'] = os.path.abspath(webroot)
     utils.mkdir(mbcfg.PATHS['webroot'])
 
     # Plotdir

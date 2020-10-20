@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import warnings
+
 warnings.filterwarnings("once", category=DeprecationWarning)  # noqa
 import logging
 
@@ -13,9 +14,10 @@ import geopandas as gpd
 
 # Local imports
 from oggm import cfg, utils, tasks, workflow
-from oggm.shop import cru
 from oggm.workflow import execute_entity_task
 from oggm.core.massbalance import MultipleFlowlineMassBalance
+
+import oggm_vas.core as vascaling
 
 from mbcrossval import mbcfg
 
@@ -27,31 +29,26 @@ def preprocessing(gdirs):
     # Prepro tasks
     task_list = [
         tasks.glacier_masks,
-        tasks.compute_centerlines,
-        tasks.initialize_flowlines,
-        tasks.catchment_area,
-        tasks.catchment_intersections,
-        tasks.catchment_width_geom,
-        tasks.catchment_width_correction,
+        # tasks.compute_centerlines,
+        # tasks.initialize_flowlines,
+        # tasks.catchment_area,
+        # tasks.catchment_intersections,
+        # tasks.catchment_width_geom,
+        # tasks.catchment_width_correction,
     ]
     for task in task_list:
         execute_entity_task(task, gdirs)
 
     # Climate tasks
-    if mbcfg.PARAMS['histalp']:
-        execute_entity_task(tasks.process_histalp_data, gdirs)
-    else:
-        execute_entity_task(tasks.process_cru_data, gdirs)
+    execute_entity_task(tasks.process_histalp_data, gdirs)
 
     return gdirs
 
 
 def calibration(gdirs, xval, major=0):
-
     # once for reference t_stars
-    tasks.compute_ref_t_stars(gdirs)
-    execute_entity_task(tasks.local_t_star, gdirs)
-    execute_entity_task(tasks.mu_star_calibration, gdirs)
+    vascaling.compute_ref_t_stars(gdirs)
+    execute_entity_task(vascaling.local_t_star, gdirs)
 
     full_ref_df = pd.read_csv(os.path.join(cfg.PATHS['working_dir'],
                                            'ref_tstars.csv'), index_col=0)
@@ -74,7 +71,7 @@ def calibration(gdirs, xval, major=0):
             if not major:
                 # store cross validated values
                 for key in glc[1].keys():
-                    if ('cv_' in key) or ('mu_star' in key) or\
+                    if ('cv_' in key) or ('mu_star' in key) or \
                             ('mustar' in key):
                         full_ref_df.loc[glc[1]['rgi_id'], key] = glc[1][key]
 
@@ -110,7 +107,6 @@ def calibration(gdirs, xval, major=0):
 
 
 def quick_crossval_entity(gdir, full_ref_df=None):
-
     tmpdf = pd.DataFrame([], columns=['std_oggm',
                                       'std_ref',
                                       'rmse',
@@ -121,25 +117,25 @@ def quick_crossval_entity(gdir, full_ref_df=None):
     tmp_ref_df = full_ref_df.loc[full_ref_df.index != gdir.rgi_id]
 
     # before the cross-val store the info about "real" mustar
-    ref_rdf = gdir.read_json('local_mustar')
+    ref_rdf = gdir.read_json('vascaling_mustar')
 
-    tasks.local_t_star(gdir, ref_df=tmp_ref_df)
-    tasks.mu_star_calibration(gdir)
+    vascaling.local_t_star(gdir, ref_df=tmp_ref_df)
 
     # read crossvalidated values
-    cv_rdf = gdir.read_json('local_mustar')
+    cv_rdf = gdir.read_json('vascaling_mustar')
 
     # ----
     # --- MASS-BALANCE MODEL
-    mb_mod = MultipleFlowlineMassBalance(gdir, use_inversion_flowlines=True)
+    mb_mod = vascaling.VAScalingMassBalance(gdir)
 
     # Mass-balance timeseries, observed and simulated
     refmb = gdir.get_ref_mb_data().copy()
-    refmb['OGGM'] = mb_mod.get_specific_mb(year=refmb.index)
+    min_hgt, max_hgt = vascaling.get_min_max_elevation(gdir)
+    refmb['OGGM'] = mb_mod.get_specific_mb(min_hgt, max_hgt, year=refmb.index)
 
     # store single glacier results
     bias = refmb.OGGM.mean() - refmb.ANNUAL_BALANCE.mean()
-    rmse = np.sqrt(np.mean(refmb.OGGM - refmb.ANNUAL_BALANCE)**2)
+    rmse = np.sqrt(np.mean(refmb.OGGM - refmb.ANNUAL_BALANCE) ** 2)
     rcor = np.corrcoef(refmb.OGGM, refmb.ANNUAL_BALANCE)[0, 1]
 
     ref_std = refmb.ANNUAL_BALANCE.std()
@@ -169,14 +165,6 @@ def quick_crossval_entity(gdir, full_ref_df=None):
            'core': tmpdf['core'].mean()}
 
     # combine "real" mustar and crossvalidated mu_star
-    # get rid of mu_star_per_flowline as list of flowlines is ugly to deal with
-    for i, fl in enumerate(cv_rdf['mu_star_per_flowline']):
-        cv_rdf['mustar_flowline_{:03d}'.format(i+1)] = fl
-    for i, fl in enumerate(ref_rdf['mu_star_per_flowline']):
-        ref_rdf['mustar_flowline_{:03d}'.format(i+1)] = fl
-    del cv_rdf['mu_star_per_flowline']
-    del ref_rdf['mu_star_per_flowline']
-
     for col in cv_rdf.keys():
         if 'rgi_id' in col:
             continue
@@ -200,7 +188,7 @@ def interpolate_mu_star(gdir, full_ref_df=None):
     aso = np.argsort(distances)[0:9]
     amin = tmp_ref_df.iloc[aso]
     distances = distances[aso] ** 2
-    interp = np.average(amin.mu_star_glacierwide,
+    interp = np.average(amin.mu_star,
                         weights=1. / distances)
 
     return [gdir.rgi_id, interp]
@@ -240,8 +228,8 @@ def initialization_selection():
     cfg.PARAMS['tstar_search_glacierwide'] = True
 
     # Pre-download other files which will be needed later
-    _ = cru.get_cru_file(var='tmp')
-    _ = cru.get_cru_file(var='pre')
+    # _ = cru.get_cru_file(var='tmp')
+    # _ = cru.get_cru_file(var='pre')
     rgi_dir = utils.get_rgi_dir(version=cfg.PATHS['rgi_version'])
 
     # Get the reference glacier ids (they are different for each RGI version)
@@ -253,7 +241,7 @@ def initialization_selection():
     for reg in df['RGI_REG'].unique():
         if reg == '19':
             continue  # we have no climate data in Antarctica
-        if mbcfg.PARAMS['region'] is not None\
+        if mbcfg.PARAMS['region'] is not None \
                 and reg != mbcfg.PARAMS['region']:
             continue
 
@@ -265,27 +253,23 @@ def initialization_selection():
     rgidf.crs = sh.crs  # for geolocalisation
 
     # reduce Europe to Histalp area (exclude Pyrenees, etc...)
-    if mbcfg.PARAMS['histalp']:
-        rgidf = rgidf.loc[(rgidf.CenLon >= 4) &
-                          (rgidf.CenLon < 20) &
-                          (rgidf.CenLat >= 43) &
-                          (rgidf.CenLat < 47)]
+    rgidf = rgidf.loc[(rgidf.CenLon >= 4) &
+                      (rgidf.CenLon < 20) &
+                      (rgidf.CenLat >= 43) &
+                      (rgidf.CenLat < 47)]
 
-        # and set standard histalp values
-        cfg.PARAMS['prcp_scaling_factor'] = 1.75
-        cfg.PARAMS['temp_all_liq'] = 2.0
-        cfg.PARAMS['temp_melt'] = -1.75
-        cfg.PARAMS['temp_default_gradient'] = -0.0065
+    # and set standard histalp values
+    cfg.PARAMS['prcp_scaling_factor'] = 1.75
+    cfg.PARAMS['temp_all_liq'] = 2.0
+    cfg.PARAMS['temp_melt'] = -1.75
+    cfg.PARAMS['temp_default_gradient'] = -0.0065
 
     # We have to check which of them actually have enough mb data.
     # Let OGGM do it:
     gdirs = workflow.init_glacier_regions(rgidf)
     # We need to know which period we have data for
-    if mbcfg.PARAMS['histalp']:
-        cfg.PARAMS['baseline_climate'] = 'HISTALP'
-        execute_entity_task(tasks.process_histalp_data, gdirs)
-    else:
-        execute_entity_task(tasks.process_cru_data, gdirs, print_log=False)
+    cfg.PARAMS['baseline_climate'] = 'HISTALP'
+    execute_entity_task(tasks.process_histalp_data, gdirs)
 
     gdirs = utils.get_ref_mb_glaciers(gdirs)
     # Keep only these
@@ -335,15 +319,12 @@ def minor_xval_statistics(gdirs):
 
         # Mass-balance model with cross-validated parameters instead
         # use the cross validated flowline mustars:
-        cv_fls = [col for col in t_cvdf.index if 'cv_mustar_flowline' in col]
-        cv_fls.sort()
-        mustarlist = t_cvdf[cv_fls].sort_index().dropna().tolist()
 
-        mb_mod = MultipleFlowlineMassBalance(gd, mu_star=mustarlist,
-                                             bias=t_cvdf.cv_bias,
-                                             use_inversion_flowlines=True
-                                             )
-        refmb['OGGM_cv'] = mb_mod.get_specific_mb(year=refmb.index)
+        mb_mod = vascaling.VAScalingMassBalance(gd, mu_star=t_cvdf.cv_mu_star,
+                                                bias=t_cvdf.cv_bias)
+        min_hgt, max_hgt = vascaling.get_min_max_elevation(gd)
+        refmb['OGGM_cv'] = mb_mod.get_specific_mb(min_hgt, max_hgt,
+                                                  year=refmb.index)
         # Compare their standard deviation
         std_ref = refmb.ANNUAL_BALANCE.std()
         rcor = np.corrcoef(refmb.OGGM_cv, refmb.ANNUAL_BALANCE)[0, 1]
@@ -359,27 +340,22 @@ def minor_xval_statistics(gdirs):
         cvdf.loc[gd.rgi_id, 'CV_MB_COR'] = rcor
 
         # Mass-balance model with interpolated mu_star
-        mb_mod = MultipleFlowlineMassBalance(gd,
-                                             mu_star=t_cvdf.interp_mustar,
-                                             bias=t_cvdf.cv_bias,
-                                             use_inversion_flowlines=True
-                                             )
-        refmb['OGGM_mu_interp'] = mb_mod.get_specific_mb(year=refmb.index)
+        mb_mod = vascaling.VAScalingMassBalance(gd,
+                                                mu_star=t_cvdf.interp_mustar,
+                                                bias=t_cvdf.cv_bias)
+        min_hgt, max_hgt = vascaling.get_min_max_elevation(gd)
+        refmb['OGGM_mu_interp'] = mb_mod.get_specific_mb(min_hgt, max_hgt,
+                                                         year=refmb.index)
         cvdf.loc[gd.rgi_id, 'INTERP_MB_BIAS'] = (refmb.OGGM_mu_interp.mean() -
                                                  refmb.ANNUAL_BALANCE.mean())
 
         # Mass-balance model with best guess tstar
-        mu_fls = [col for col in t_cvdf.index if ('mustar_flowline' in col)
-                  and ('cv_' not in col)]
-        mu_fls.sort()
-        mustarlist = t_cvdf[mu_fls].sort_index().dropna().tolist()
-        mb_mod = MultipleFlowlineMassBalance(gd,
-                                             mu_star=mustarlist,
-                                             bias=t_cvdf.bias,
-                                             use_inversion_flowlines=True
-                                             )
 
-        refmb['OGGM_tstar'] = mb_mod.get_specific_mb(year=refmb.index)
+        mb_mod = vascaling.VAScalingMassBalance(gd, mu_star=t_cvdf.mu_star,
+                                                bias=t_cvdf.bias)
+        min_hgt, max_hgt = vascaling.get_min_max_elevation(gd)
+        refmb['OGGM_tstar'] = mb_mod.get_specific_mb(min_hgt, max_hgt,
+                                                     year=refmb.index)
         cvdf.loc[gd.rgi_id, 'tstar_MB_BIAS'] = (refmb.OGGM_tstar.mean() -
                                                 refmb.ANNUAL_BALANCE.mean())
 
@@ -395,9 +371,9 @@ def minor_xval_statistics(gdirs):
                             'xval_bias': xbias,
                             'interp_bias': ibias,
                             # TODO wie mach ich das mit den Flowline Mus hier?
-                            'mustar': t_cvdf.mu_star_glacierwide,
+                            'mustar': t_cvdf.mu_star,
                             'tstar': t_cvdf.tstar,
-                            'xval_mustar': t_cvdf.cv_mu_star_glacierwide,
+                            'xval_mustar': t_cvdf.cv_mu_star,
                             'xval_tstar': t_cvdf.cv_t_star,
                             'interp_mustar': t_cvdf.interp_mustar},
                            ignore_index=True)

@@ -71,9 +71,10 @@ def run_major_crossvalidation():
     tmelt = np.arange(mbcfg.PARAMS['tmel1'],
                       mbcfg.PARAMS['tmel2'] + mbcfg.PARAMS['tmel_step'],
                       mbcfg.PARAMS['tmel_step'])
-    tgrad = np.arange(mbcfg.PARAMS['tgra1'],
-                      mbcfg.PARAMS['tgra2'] + mbcfg.PARAMS['tgra_step'],
-                      mbcfg.PARAMS['tgra_step'])
+    # tgrad = np.arange(mbcfg.PARAMS['tgra1'],
+    #                   mbcfg.PARAMS['tgra2'] + mbcfg.PARAMS['tgra_step'],
+    #                   mbcfg.PARAMS['tgra_step'])
+    tgrad = np.array([-0.0065])
 
     # loop over all
     for PR in prcpsf:
